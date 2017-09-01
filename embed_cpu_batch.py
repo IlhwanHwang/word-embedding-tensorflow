@@ -3,15 +3,15 @@ import numpy as np
 from argparse import Namespace
 
 meta = Namespace()
-meta.batch_size = 8192
-meta.embed_dim = 512
+meta.batch_size = 128
+meta.embed_dim = 128
 meta.window_size = 10
 meta.noise_size = 64
-meta.learning_rate = 1e-6
-meta.training_step = 1000000
+meta.learning_rate = 1e-2
+meta.training_step = 100000
 meta.interval_save = 100000
 meta.interval_print = 100
-meta.interval_test = 1500
+meta.interval_test = 500
 meta.domain_size = 100000
 meta.savefile = './model/model.ckpt'
 meta.data_dir = './data'
@@ -80,35 +80,24 @@ class Dataset:
 		np.save(meta.data_dir + '/noise_pd.npy', self.noise_pd)
 
 
-	def word_index(self, word):
-		return np.where(self.domain == word)[0]
+	def batch(self, batch_size, noise_size):
 
+		ind_w_data = np.random.choice(np.arange(self.window_size, self.content.size - self.window_size), size=[batch_size], p=self.content_pd)
+		w_data = self.content[ind_w_data]
+		ind_c_data = ind_w_data + np.multiply(np.random.randint(1, self.window_size + 1, size=[batch_size]), np.random.choice([1, -1], size=[batch_size]))
+		c_data = self.content[ind_c_data]
+
+		w_noise = np.random.choice(np.arange(self.domain.size), size=[batch_size * noise_size], p=self.noise_pd)
+		c_noise = np.random.choice(np.arange(self.domain.size), size=[batch_size * noise_size], p=self.noise_pd)
+
+		return w_data, c_data, w_noise, c_noise
+
+
+	def word_index(self, word):
+		return np.where(self.domain == word)[0][0]
 
 	def index_word(self, index):
 		return self.domain[index]
-
-
-	def nearest(self, Q, word, k):
-		ind = self.word_index(word)[0]
-		embed = np.array([Q[ind]])
-		dot = np.sum(np.multiply(np.repeat(embed, Q.shape[0], axis=0), Q), axis=1)
-		norm = np.linalg.norm(Q, axis=1) * np.linalg.norm(embed)
-		cos = dot / norm
-		return self.domain[np.argpartition(-cos, k)[0:k]]
-
-
-	def analogy(self, Q, a, b, c, k):
-		a_ind = self.word_index(a)[0]
-		b_ind = self.word_index(b)[0]
-		c_ind = self.word_index(c)[0]
-
-		a_embed = Q[a_ind]
-		b_embed = Q[b_ind]
-		c_embed = Q[c_ind]
-
-		dot = np.matmul(Q, np.array([b_embed - a_embed + c_embed]).T)
-
-		return self.domain[np.argpartition(-np.reshape(dot, [-1]), k)[0:k]]
 
 
 dataset = Dataset(meta)
@@ -127,24 +116,10 @@ Q = xavier_variable('Q', shape=[meta.domain_size, meta.embed_dim])
 R = xavier_variable('R', shape=[meta.domain_size, meta.embed_dim])
 B = xavier_variable('B', shape=[meta.domain_size])
 
-content = tf.constant(dataset.content, dtype=tf.int32)
-content_pd = tf.constant(dataset.content_pd / np.mean(dataset.content_pd), dtype=tf.float32)
-np_noise_content = np.repeat(np.arange(meta.domain_size), (dataset.noise_pd * dataset.content.size).astype(np.int32))
-noise_content = tf.constant(np_noise_content, dtype=tf.int32)
-
-ind_w_data = tf.random_uniform(shape=[meta.batch_size], minval=meta.window_size, maxval=dataset.content.size, dtype=tf.int32)
-ind_c_data = tf.random_uniform(shape=[meta.batch_size], minval=-meta.window_size, maxval=0, dtype=tf.int32)
-
-w_data = tf.nn.embedding_lookup(content, ind_w_data)
-c_data = tf.nn.embedding_lookup(content, ind_w_data + ind_c_data)
-
-loss_data = tf.nn.embedding_lookup(content_pd, ind_w_data)
-
-ind_w_noise = tf.random_uniform(shape=[meta.batch_size], minval=0, maxval=np_noise_content.size, dtype=tf.int32)
-ind_c_noise = tf.random_uniform(shape=[meta.batch_size], minval=0, maxval=np_noise_content.size, dtype=tf.int32)
-
-w_noise = tf.nn.embedding_lookup(noise_content, ind_w_noise)
-c_noise = tf.nn.embedding_lookup(noise_content, ind_c_noise)
+w_data = tf.placeholder(tf.int32, shape=[meta.batch_size])
+c_data = tf.placeholder(tf.int32, shape=[meta.batch_size])
+w_noise = tf.placeholder(tf.int32, shape=[meta.batch_size * meta.noise_size])
+c_noise = tf.placeholder(tf.int32, shape=[meta.batch_size * meta.noise_size])
 
 q_w_data = tf.nn.embedding_lookup(Q, w_data)
 r_c_data = tf.nn.embedding_lookup(R, c_data)
@@ -157,7 +132,7 @@ b_c_noise = tf.nn.embedding_lookup(B, c_noise)
 score_data = tf.reduce_sum(tf.multiply(q_w_data, r_c_data), axis=1) + b_c_data
 score_noise = -(tf.reduce_sum(tf.multiply(q_w_noise, r_c_noise), axis=1) + b_c_noise)
 
-loss = -(tf.reduce_sum(tf.multiply(tf.log(tf.sigmoid(score_data)), loss_data)) + tf.reduce_sum(tf.log(tf.sigmoid(score_noise))))
+loss = -(tf.reduce_sum(tf.log(tf.sigmoid(score_data))) + tf.reduce_sum(tf.log(tf.sigmoid(score_noise))))
 global_step = tf.Variable(0, trainable=False, name='global_step')
 train = tf.train.GradientDescentOptimizer(meta.learning_rate).minimize(loss, global_step)
 
@@ -171,8 +146,22 @@ if ckpt and tf.train.checkpoint_exists(ckpt.model_checkpoint_path):
 else:
 	sess.run(tf.global_variables_initializer())
 
+def nearest(Q, key, k):
+	embed = np.array([Q[key]])
+	dot = np.sum(np.multiply(np.repeat(embed, Q.shape[0], axis=0), Q), axis=1)
+	norm = np.linalg.norm(Q, axis=1) * np.linalg.norm(embed)
+	cos = dot / norm
+	return np.argpartition(-cos, k)[0:k]
+
 for _ in range(meta.training_step):
-	_, loss_value = sess.run([train, loss], feed_dict={})
+	np_w_data, np_c_data, np_w_noise, np_c_noise = dataset.batch(meta.batch_size, meta.noise_size)
+	feed = {
+		w_data : np_w_data,
+		c_data : np_c_data,
+		w_noise : np_w_noise,
+		c_noise : np_c_noise
+	}
+	_, loss_value = sess.run([train, loss], feed_dict=feed)
 	step = sess.run(global_step)
 
 	if step % meta.interval_print == 0:
@@ -180,11 +169,15 @@ for _ in range(meta.training_step):
 
 	if step % meta.interval_test == 0:
 		Q_embed = sess.run(Q, feed_dict={})
-		print('one: {}'.format(dataset.nearest(Q_embed, 'one', 5)))
-		print('circle: {}'.format(dataset.nearest(Q_embed, 'circle', 5)))
-		print('france: {}'.format(dataset.nearest(Q_embed, 'france', 5)))
-		print('man to woman is king to: {}'.format(dataset.analogy(Q_embed, 'man', 'woman', 'king', 5)))
-		print('rectangle to circle is cube to: {}'.format(dataset.analogy(Q_embed, 'rectangle', 'circle', 'cube', 5)))
+
+		n = nearest(Q_embed, dataset.word_index('one'), 5)
+		print('one: {}'.format(dataset.index_word(n)))
+
+		n = nearest(Q_embed, dataset.word_index('start'), 5)
+		print('start: {}'.format(dataset.index_word(n)))
+
+		n = nearest(Q_embed, dataset.word_index('circle'), 5)
+		print('circle: {}'.format(dataset.index_word(n)))
 
 	if step % meta.interval_save == 0:
 		print('Saving status...')
