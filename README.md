@@ -13,7 +13,7 @@ Word Embedding Solver using Tensorflow
 
 	python embed.py
 
-It will automatically learn word embedding from given dataset. (./data) You can try another dataset by deleting exsiting dataset file. As they are deleted, the program will generate dataset from given data file (mere natural text file.) The original dataset is generated from [this][data].
+It will automatically generate dataset from given text file. The original dataset can be generated from [this][data].
 
 Also, it will test its accuracy every 10000 steps. The test file can be downloaded [here][test] in word2vec/trunk/questions-words.txt.
 
